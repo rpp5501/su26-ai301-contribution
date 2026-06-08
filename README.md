@@ -1,16 +1,16 @@
-# Contribution [#]: [Issue Title]
-
-**Contribution Number:** [1 / 2 / 3]  
-**Student:** [Your Name]  
-**Issue:** [GitHub issue link]  
-**Status:** [Phase I / Phase II / Phase III / Phase IV] [In Progress / Complete]
+# Contribution 1 : Add Expected Calibration Error metrics and derived
+**Contribution Number:** 1
+**Student:** Rishabh Padhy
+**Issue:** [pytorch/ignite #1009](https://github.com/pytorch/ignite/issues/1009)
+**Status:** Phase I Complete
 
 ---
 
 ## Why I Chose This Issue
 
-[1-2 paragraphs explaining why this issue interests you, how it matches your skills/learning goals, what you hope to learn]
+I chose this issue because it sits perfectly at the intersection of my academic training and my core technical interests. As a final-semester Computer Science major at PSU with a minor in mathematics, I have completed dedicated coursework in Neural Networks and Deep Learning alongside several advanced mathematics classes. Expected Calibration Error (ECE) and Multiclass ECE are vital statistical components for measuring model uncertainty, ensuring that a neural network's confidence scores realistically align with its actual predictive accuracy. Implementing these validation metrics from scratch gives me an actionable, high-leverage way to apply my deep learning and mathematical background directly to framework engineering.
 
+This project perfectly matches my professional learning goals of moving beyond high-level model training and diving deep into the internals of open-source machine learning infrastructure. Because PyTorch-Ignite heavily relies on custom metric formalisms and utilizes Jupyter Notebooks for testing and prototyping, it allows me to fully leverage my existing toolkit while learning how to design clean, low-dependency, and production-grade library code for the broader ML community.
 ---
 
 ## Understanding the Issue
