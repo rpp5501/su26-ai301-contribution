@@ -2,7 +2,7 @@
 **Contribution Number:** 1
 **Student:** Rishabh Padhy
 **Issue:** [pytorch/ignite #1009](https://github.com/pytorch/ignite/issues/1009)
-**Status:** Phase II Complete
+**Status:** Phase III Complete
 
 ---
 
@@ -61,11 +61,11 @@ and have it work for binary and multiclass inputs, on CPU/GPU, and under distrib
 
 ### Environment Setup
 
-- Cloned my fork of `pytorch/ignite`/
-- Installed the CPU build of PyTorch plus NumPy: `pip install torch numpy`.
+- Cloned my fork of `pytorch/ignite` and created the working branch `fix-issue-1009`.
+- Installed the CPU build of PyTorch plus NumPy/SciPy: `pip install torch numpy scipy`.
 - ignite is run straight from the source tree via `PYTHONPATH=.` (no editable install needed to import `ignite.metrics`).
 - **Challenge:** the default PyTorch wheel index was not reachable from my environment; resolved by installing from the standard PyPI index (`pip install torch`). NumPy is an implicit runtime dependency for some torch paths — installing it silenced a `Failed to initialize NumPy` warning.
-- Confirmed the working version is ignite `0.6.0` (`ignite/__init__.py`), which sets the `.. versionadded:: 0.6.0` directive my new metric will carry.
+- Confirmed the working version is ignite `0.6.0` (`ignite/__init__.py`), which sets the `.. versionadded:: 0.6.0` directive on the new metrics.
 
 ### Steps to Reproduce
 
@@ -76,7 +76,7 @@ and have it work for binary and multiclass inputs, on CPU/GPU, and under distrib
    ```
 2. **Part A** prints whether `ExpectedCalibrationError` exists in `ignite.metrics`.
    - **Expected (if the feature existed):** `True`
-   - **Actual:** `False` — the metric is missing.
+   - **Actual (at Phase II, before my work):** `False` — the metric was missing.
 3. **Part B** runs two accumulation strategies over a growing number of batches and prints the bytes retained in each metric's internal state:
    - the **PR #3132 strategy** (`torch.cat` every `update()`), and
    - the **proposed strategy** (fixed-size bins updated with `index_add_`).
@@ -87,7 +87,7 @@ Observed output (reproduced consistently across runs):
 
 ```
 === Part A: ExpectedCalibrationError present in ignite.metrics? ===
-False
+False        # at Phase II (before implementation); now prints True on branch fix-issue-1009
 
 === Part B: retained state size as dataset size N grows (batch=4096) ===
  batches          N    PR#3132 state   proposed state
@@ -96,15 +96,15 @@ False
     1000    4096000         20.48 MB      0.000120 MB
 ```
 
-PR #3132's state climbs 0.20 → 2.05 → **20.48 MB** as N grows 10× then 10× again (clean O(N)), and would keep climbing until OOM on a realistically sized dataset. The proposed fixed-bin state is flat at **~120 bytes** regardless of N (O(1)).
+PR #3132's state climbs 0.20 → 2.05 → **20.48 MB** as N grows 10× then 10× again (clean O(N)), and would keep climbing until OOM on a realistically sized dataset. The proposed fixed-bin state is flat at **~120 bytes** (3 × `num_bins` float32 values) regardless of N (O(1)).
 
 ### Reproduction Evidence
 
-- **Working branch (fork):** 
-- **Reproduction script:** [`repro/repro_ece.py`]
+- **Working branch (fork):** https://github.com/rpp5501/ignite/tree/fix-issue-1009
+- **Reproduction script:** [`repro/repro_ece.py`](https://github.com/rpp5501/ignite/blob/fix-issue-1009/repro/repro_ece.py)
 - **My findings:**
-  - The feature genuinely does not exist (Part A → `False`).
-  - PR #3132's memory cost is O(N) in the number of samples, not O(1) in the number of bins — confirmed empirically (linear growth above). This is the concrete defect my implementation must avoid.
+  - The feature genuinely did not exist (Part A → `False`).
+  - PR #3132's memory cost is O(N) in the number of samples, not O(1) in the number of bins — confirmed empirically (linear growth above). This is the concrete defect my implementation avoids.
 
 ---
 
@@ -126,7 +126,7 @@ The **Baal reference** (`baal/utils/metrics.py`) confirms the right shape of the
 
 ### Proposed Solution
 
-Implement a shared base class `_BaseCalibrationError(Metric)` that accumulates **fixed-size per-bin aggregates** during `update()`, with two thin public subclasses — `ExpectedCalibrationError` and `MaximumCalibrationError` — that differ only in `compute()` (weighted-mean gap vs. worst-bin gap). MCE reuses the *identical* accumulators, so adding it is near-zero extra cost and directly satisfies the issue's "and derived" wording.
+A shared base class `_BaseCalibrationError(Metric)` accumulates **fixed-size per-bin aggregates** during `update()`, with two thin public subclasses — `ExpectedCalibrationError` and `MaximumCalibrationError` — that differ only in `compute()` (weighted-mean gap vs. worst-bin gap). MCE reuses the *identical* accumulators, so adding it is near-zero extra cost and directly satisfies the issue's "and derived" wording.
 
 This follows the standard accumulator pattern already used by `ignite/metrics/entropy.py` (scalar accumulators) and `ignite/metrics/confusion_matrix.py` (vector/tensor accumulators): state is a small device tensor; `reset`/`update` decorated with `@reinit__is_reduced`; `compute` decorated with `@sync_all_reduce(...)` for distributed correctness.
 
@@ -136,87 +136,121 @@ This follows the standard accumulator pattern already used by `ignite/metrics/en
 
 Using UMPIRE framework (adapted):
 
-**Understand:** PyTorch-Ignite has no calibration metric. I need to add `ExpectedCalibrationError` and `MaximumCalibrationError` that, given `(y_pred, y)`, bin predictions by confidence and return (respectively) the weighted-mean and worst-case gap between per-bin accuracy and per-bin confidence — for binary and multiclass inputs, on CPU/GPU and under distributed training — without storing every prediction.
+**Understand:** PyTorch-Ignite has no calibration metric. I needed to add `ExpectedCalibrationError` and `MaximumCalibrationError` that, given `(y_pred, y)`, bin predictions by confidence and return (respectively) the weighted-mean and worst-case gap between per-bin accuracy and per-bin confidence — for binary and multiclass inputs, on CPU/GPU and under distributed training — without storing every prediction.
 
-**Match:** The codebase already has the exact patterns I need:
-- `ignite/metrics/entropy.py` — a minimal accumulator metric: state initialized in `reset()` on `self._device`, accumulated in `update()`, finalized in `compute()`, with `@reinit__is_reduced` / `@sync_all_reduce(...)` and `_state_dict_all_req_keys`. It also shows the `(B, C, ...) → (N, C)` flatten via `movedim(1, -1).reshape(-1, num_classes)` that I reuse for segmentation inputs.
-- `ignite/metrics/confusion_matrix.py` — shows the **vector/tensor accumulator** pattern (`torch.zeros(...)` of fixed shape, accumulated in-place, listed in `@sync_all_reduce`), which my three bin tensors follow.
-- `ignite/metrics/accuracy.py` — its `argmax`/confidence-extraction conventions. Note I deliberately do **not** reuse `_BaseClassification._check_type`, because its binary path asserts `y_pred ∈ {0,1}`, which would reject probability inputs; I write explicit shape handling instead (like `entropy.py`).
+**Match:** The codebase already had the exact patterns I needed:
+- `ignite/metrics/entropy.py` — a minimal accumulator metric with `@reinit__is_reduced` / `@sync_all_reduce(...)` and `_state_dict_all_req_keys`; also shows the `(B, C, ...) → (N, C)` flatten via `movedim(1, -1).reshape(-1, num_classes)` I reuse for segmentation inputs.
+- `ignite/metrics/confusion_matrix.py` — the **vector/tensor accumulator** pattern (`torch.zeros(...)` of fixed shape, accumulated in-place, listed in `@sync_all_reduce`), which my three bin tensors follow.
+- `ignite/metrics/accuracy.py` — its `argmax`/confidence-extraction conventions. I deliberately did **not** reuse `_BaseClassification._check_type`, because its binary path asserts `y_pred ∈ {0,1}`, which would reject probability inputs; I write explicit shape handling instead (like `entropy.py`).
 
-**Plan:**
-1. Add `ignite/metrics/calibration_error.py`:
-   - `_BaseCalibrationError(Metric)` with `__init__(num_bins=10, output_transform=…, device=…, skip_unrolling=False)`; validate `num_bins` is a positive int.
-   - `reset()` (`@reinit__is_reduced`): pre-allocate three fixed-size tensors on `self._device` —
-     `self._bin_correct`, `self._bin_conf`, `self._bin_count`, each `torch.zeros(num_bins)`.
-   - `update(output)` (`@reinit__is_reduced`): `.detach()` inputs; extract per-sample `conf` and `correct` (multiclass: `conf, pred = y_pred.max(dim=1)`, flattening `(B, C, ...)`; binary `(B,)`/`(B,1)`: `conf = max(p, 1−p)`, `pred = p ≥ 0.5`); compute bin index `clamp((conf * num_bins).long(), max=num_bins−1)`; accumulate with `index_add_` into the three tensors — **O(1) memory in N**.
-   - Helper `_acc_conf()` → per-bin accuracy and confidence (masking empty bins).
-   - `ExpectedCalibrationError.compute()` (`@sync_all_reduce("_bin_correct","_bin_conf","_bin_count")`): guard empty state with `NotComputableError`; return `Σ (count_m / n) · |acc_m − conf_m|` — **fully vectorized, no Python loop**.
-   - `MaximumCalibrationError.compute()` (same decorator/guard): return `max_m |acc_m − conf_m|` over non-empty bins.
-   - Set `_state_dict_all_req_keys = ("_bin_correct", "_bin_conf", "_bin_count")`.
-   - Write complete Google-style docstrings (≤120 cols) with the math, the "expects probabilities" note, a `.. testcode::`/`.. testoutput::` doctest, and `.. versionadded:: 0.6.0`.
-2. Register in `ignite/metrics/__init__.py` (import + add both names to `__all__`).
-3. Add both classes to `docs/source/metrics.rst` under "Complete list of metrics".
-4. Add `tests/ignite/metrics/test_calibration_error.py`.
+**Plan:** (1) add `ignite/metrics/calibration_error.py`; (2) register in `ignite/metrics/__init__.py`; (3) document in `docs/source/metrics.rst`; (4) add `tests/ignite/metrics/test_calibration_error.py`. — **All four steps completed in Phase III (see Implementation Notes).**
 
-**Implement:** *(Phase III)* — will be done on the working branch:
+**Implement:** Done on the working branch:
+https://github.com/rpp5501/ignite/tree/fix-issue-1009
 
+**Review:** Self-reviewed against `CONTRIBUTING.md`: ran `ruff check` and `ruff format` (the project replaced flake8/black/isort with ruff) — both clean; followed metric conventions (decorators, `NotComputableError`, `ValueError` for bad shapes, `.detach()` on inputs, `_state_dict_all_req_keys`); added `.. testcode::`/`.. testoutput::` doctests; tests named `test_*` with `@pytest.mark.usefixtures("distributed")` for the distributed suite. Numerical results validated against a NumPy re-implementation of the Baal binning.
 
-**Review:** Self-review against `CONTRIBUTING.md`: run `pre-commit run -a` (ruff lint + format — the project replaced flake8/black/isort) and `pyrefly check`; follow metric conventions (decorators, `NotComputableError`, `ValueError` for bad shapes, `.detach()` on inputs, `_state_dict_all_req_keys`); add a doctest example so the docs build/test (`cd docs && make html && make doctest`); write tests named `test_*`, with `cuda` in the name for GPU tests and `@pytest.mark.distributed` for distributed tests. Validate numerical results against a NumPy re-implementation of the Baal binning.
-
-**Evaluate:** See Testing Strategy below — unit tests for correctness against hand-computed and Baal-reference values, a distributed test confirming cross-process sync, and re-running the reproduction script to confirm the new metric's state stays O(1) where PR #3132 was O(N).
+**Evaluate:** See Testing Strategy below.
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests
+All tests live in `tests/ignite/metrics/test_calibration_error.py` and mirror the structure of `test_entropy.py` (parametrized over the `available_device` fixture for CPU/CUDA/MPS, with a NumPy reference).
 
-- [ ] Test case 1: Hand-computed small example — feed a tiny `(y_pred, y)` whose ECE/MCE I compute by hand and assert `compute()` matches within tolerance.
-- [ ] Test case 2: Correctness vs. a NumPy reference re-implementing the Baal binning, on random binary and multiclass data, parametrized over `num_bins`.
-- [ ] Test case 3: Edge cases — perfectly calibrated input → ECE ≈ 0; a maximally over-confident-but-wrong input → ECE ≈ 1; varying `num_bins`; `conf == 1.0` lands in the last bin.
-- [ ] Test case 4: `NotComputableError` raised when `compute()` is called before any `update()` (both metrics); `ValueError` on malformed shapes.
-- [ ] Test case 5: Batched vs. single-shot equivalence — splitting the same data across multiple `update()` calls yields the same result as one call (verifies online accumulation).
+### Unit Tests — **implemented & passing (45 passed on CPU)**
 
-### Integration Tests
+- [x] **Correctness vs. NumPy reference** (`np_ece` / `np_mce` re-implementing the Baal binning) on binary, multiclass, and image-segmentation inputs, parametrized over `num_bins ∈ {5, 10, 15}`.
+- [x] **Edge cases** — confidently-correct input → ECE = MCE ≈ 0; confidently-wrong input → ECE = MCE ≈ 1; `conf == 1.0` lands in the last bin.
+- [x] **`NotComputableError`** raised when `compute()` is called before any `update()` (both metrics).
+- [x] **`ValueError`** on a positive-integer-violating `num_bins` and on malformed input shapes.
+- [x] **Batched vs. single-shot equivalence** — splitting data across multiple `update()` calls equals one call (verifies online accumulation).
+- [x] **Detached state** — accumulators do not retain autograd graph (`requires_grad is False`).
 
-- [ ] Integration scenario 1: Attach to an `Engine`/`create_supervised_evaluator` and confirm `state.metrics["ece"]` is populated after a run.
-- [ ] Integration scenario 2: `@pytest.mark.distributed` test (CPU gloo) confirming the metric returns the same value as the single-process reference after `@sync_all_reduce`, and that the bin tensors live on the chosen `metric_device`.
+### Integration / Distributed Tests — **implemented**
+
+- [x] `TestDistributed.test_integration` — attaches each metric to an `Engine`, runs across ranks, `idist.all_gather`s the data, and asserts the result matches the single-process NumPy reference (proves `@sync_all_reduce` correctness).
+- [x] `TestDistributed.test_accumulator_device` — asserts the three bin tensors live on the chosen `metric_device`.
+- **Note:** the distributed suite is launched by the project's multi-process runner (`pytest --dist=each --tx ...`, requires `pytest-xdist`) and is **skipped on Windows** per `CONTRIBUTING.md`; it runs in upstream CI on Linux. Locally I confirmed the existing `test_entropy.py::TestDistributed` skips/errors identically without the runner, so this is environmental, not a defect.
 
 ### Manual Testing
 
-Re-run `repro/repro_ece.py` after implementation: Part A should print `True`, and the new metric's retained state should remain flat (O(1)) as N grows — the opposite of PR #3132's linear growth shown above.
+- `python -m pytest tests/ignite/metrics/test_calibration_error.py` → **45 passed** (CUDA/MPS variants skipped on a CPU-only box).
+- Doctests verified through a real evaluator: ECE → `0.2500000…`, MCE → `0.6999999…` (matches the `.. testoutput::` blocks).
+- Re-ran `repro/repro_ece.py`: Part A now prints `True`; the new metric's retained state stays flat at ~120 bytes as N grows to 4M — the opposite of PR #3132's linear growth.
 
 ---
 
 ## Implementation Notes
 
-### Week 1 Progress (Phase II)
+### Week 1 Progress (Phase III)
 
-- Set up the environment (PyTorch CPU + NumPy), ran ignite from source (version `0.6.0`).
-- Wrote and ran `repro/repro_ece.py`, confirming (A) the metric is missing and (B) PR #3132's accumulation is O(N) — measured 0.20 → 20.48 MB growth.
-- Studied `entropy.py` (scalar accumulator + flatten pattern), `confusion_matrix.py` (vector accumulator), and `accuracy.py` (shape/confidence conventions) as templates, and located all registration/doc touch-points.
-- Fetched the Baal reference (`baal/utils/metrics.py`) to lock down the exact binning (`floor(conf * n_bins)`, three per-bin aggregates) so my tests can validate against a faithful NumPy port.
-- Confirmed scope with mentors/self: **ECE + MCE** in one module, **probabilities** as the expected input.
+**What I built:**
+- Added `ignite/metrics/calibration_error.py` with `_BaseCalibrationError` (shared binning) and two public metrics, `ExpectedCalibrationError` and `MaximumCalibrationError`:
+  - `reset()` pre-allocates three fixed-size tensors on `self._device`: `_bin_correct`, `_bin_conf`, `_bin_count` (each `torch.zeros(num_bins)`).
+  - `update()` extracts per-sample confidence/correctness (multiclass `max(dim=1)`; binary `max(p, 1−p)`), computes `bin_idx = clamp((conf * num_bins).long(), 0, num_bins−1)`, and accumulates with `index_add_` — **O(1) memory in N**.
+  - `compute()` is fully vectorized: ECE = `Σ (count_m / n)·|acc_m − conf_m|`; MCE = `max_m |acc_m − conf_m|` over non-empty bins.
+  - Decorated with `@reinit__is_reduced` (reset/update) and `@sync_all_reduce(...)` (compute); set `_state_dict_all_req_keys`.
+- Registered both metrics in `ignite/metrics/__init__.py` (import + `__all__`) and added them to the autosummary in `docs/source/metrics.rst`.
+- Wrote `tests/ignite/metrics/test_calibration_error.py` (unit + distributed) with a NumPy reference for the Baal binning.
+- Recreated `repro/repro_ece.py` so the reproduction is runnable on this branch.
+
+**Challenges faced & how I resolved them:**
+- **Probabilities vs. logits / shape handling.** I first considered subclassing `_BaseClassification` to reuse `_check_type`, but its binary branch asserts `y_pred ∈ {0,1}`, which rejects probability inputs. Resolved by writing explicit shape handling (like `entropy.py`) and documenting that `y_pred` is expected to be probabilities.
+- **`conf == 1.0` overflowing the bin index.** `floor(1.0 * num_bins) = num_bins` is out of range. Baal clips confidence to `0.9999`; I instead `clamp(..., max=num_bins−1)`, which is cleaner and keeps a perfectly-confident sample in the last bin (verified by a unit test).
+- **float32 vs float64 binning at bin boundaries.** To avoid flaky comparisons, the NumPy reference is computed from the same probabilities the metric sees and assertions use `pytest.approx(..., abs=1e-5)`; random softmax outputs effectively never sit exactly on a `k/num_bins` boundary.
 
 ### Code Changes
 
-- **Files modified (planned):** `ignite/metrics/calibration_error.py` (new), `ignite/metrics/__init__.py`, `docs/source/metrics.rst`, `tests/ignite/metrics/test_calibration_error.py` (new).
-- **Files added so far (reproduction):** `repro/repro_ece.py`, `repro/README.md`.
+- **Working branch:** https://github.com/rpp5501/ignite/tree/fix-issue-1009
+- **Files added:**
+  - `ignite/metrics/calibration_error.py` (new metrics)
+  - `tests/ignite/metrics/test_calibration_error.py` (new tests)
+  - `repro/repro_ece.py` (reproduction aid — not intended for the upstream PR)
+- **Files modified:**
+  - `ignite/metrics/__init__.py` (import + `__all__`)
+  - `docs/source/metrics.rst` (autosummary entries)
+- **Commit (Conventional Commits):** see the **Pull Request** section for the exact message used.
 - **Approach decisions:** fixed-size per-bin accumulators (O(1) memory) updated with `index_add_` + `@sync_all_reduce` for distributed correctness + vectorized `compute()`, with a shared base class so MCE reuses ECE's accumulators — explicitly avoiding PR #3132's `torch.cat` growth and Python bin loop. Input treated as probabilities (logits via `output_transform`) to avoid double-softmax.
 
 ---
 
 ## Pull Request
 
-**PR Link:** [GitHub PR URL when submitted in Phase III]
+**PR Link:** [to be opened in Phase IV — branch `fix-issue-1009` is ready]
 
-**PR Description:** [Will adapt the Analysis + Implementation Plan above]
+**Commit message (Conventional Commits v1.0.0):**
+
+```
+feat(metrics): add Expected and Maximum Calibration Error metrics
+
+Add ExpectedCalibrationError and MaximumCalibrationError to ignite.metrics,
+implementing the model-calibration metrics requested in #1009 ("as coded in
+Baal").
+
+Both metrics share a fixed-size, per-bin accumulator (sum of confidences,
+correct count, and sample count per bin) updated in place with index_add_, so
+the retained state is O(num_bins) regardless of dataset size. This avoids the
+O(N) torch.cat growth of the prior attempt (#3132), which OOMs on large
+datasets. compute() is fully vectorized (no Python loop over bins) and uses
+@reinit__is_reduced / @sync_all_reduce for correct reduction under distributed
+training. y_pred is expected to be probabilities; binary (B,)/(B, 1) and
+multiclass (B, C)/(B, C, ...) inputs are supported.
+
+Register both metrics in ignite.metrics, document them in
+docs/source/metrics.rst, and add unit and distributed tests validated against a
+NumPy reference of the Baal binning.
+
+Closes #1009
+```
+
+**PR Description:** Will adapt the Analysis + Implementation Plan above.
 
 **Maintainer Feedback:**
 - [Date]: [Summary of feedback received]
 - [Date]: [How you addressed it]
 
-**Status:** Not yet submitted (Phase II)
+**Status:** Implementation complete on `fix-issue-1009`; PR to be opened in Phase IV.
 
 ---
 
@@ -227,14 +261,16 @@ Re-run `repro/repro_ece.py` after implementation: Part A should print `True`, an
 - How PyTorch-Ignite's `Metric` base class enforces distributed correctness through the `@reinit__is_reduced` / `@sync_all_reduce` decorators, and why naive accumulation breaks under multi-GPU.
 - Reasoning about memory complexity (O(N) vs O(1)) of an online metric and measuring it empirically.
 - Vectorized histogram-style accumulation with `index_add_` / `clamp` instead of Python loops over bins.
+- Writing device-parametrized and distributed tests against an independent NumPy reference.
 
 ### Challenges Overcome
 
-- PyTorch wheel index was unreachable; resolved by installing from standard PyPI. Documented for future contributors.
+- Reconciling the probabilities-vs-logits convention with ignite's existing shape-checking helpers (chose explicit shape handling over `_BaseClassification`).
+- Handling the `conf == 1.0` bin-edge case and float32/float64 boundary sensitivity in tests.
 
 ### What I'd Do Differently Next Time
 
-[Reflection to be added during/after implementation.]
+- Confirm the input convention (probabilities vs logits) with a maintainer comment on the issue *before* implementing, since it shapes the whole API.
 
 ---
 
@@ -243,4 +279,5 @@ Re-run `repro/repro_ece.py` after implementation: Part A should print `True`, an
 - [Baal calibration metrics (reference implementation)](https://github.com/baal-org/baal)
 - [PyTorch-Ignite — How to create a custom metric](https://docs.pytorch.org/ignite/metrics.html#how-to-create-a-custom-metric)
 - [pytorch/ignite issue #1009](https://github.com/pytorch/ignite/issues/1009) and [prior attempt PR #3132](https://github.com/pytorch/ignite/pull/3132)
+- [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)
 - Existing in-repo metrics studied: `ignite/metrics/entropy.py`, `ignite/metrics/confusion_matrix.py`, `ignite/metrics/accuracy.py`
