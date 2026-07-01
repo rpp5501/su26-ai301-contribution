@@ -2,7 +2,7 @@
 **Contribution Number:** 1
 **Student:** Rishabh Padhy
 **Issue:** [pytorch/ignite #1009](https://github.com/pytorch/ignite/issues/1009)
-**Status:** Phase III Complete
+**Status:** Phase IV Complete
 
 ---
 
@@ -244,8 +244,13 @@ NumPy reference of the Baal binning.
 Closes #1009
 ```
 
-**PR Description:** Will adapt the Analysis + Implementation Plan above.
+PR Link: https://github.com/pytorch/ignite/pull/3799
 
+PR Description: Added Expected and Maximum Calibration Error metrics to ignite.metrics (Fixes #1009).
+
+Maintainer Feedback:.
+
+Status: Awaiting review.
 **Maintainer Feedback:**
 - [Date]: [Summary of feedback received]
 - [Date]: [How you addressed it]
