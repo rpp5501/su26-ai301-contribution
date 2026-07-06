@@ -286,3 +286,26 @@ Status: Awaiting review.
 - [pytorch/ignite issue #1009](https://github.com/pytorch/ignite/issues/1009) and [prior attempt PR #3132](https://github.com/pytorch/ignite/pull/3132)
 - [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/)
 - Existing in-repo metrics studied: `ignite/metrics/entropy.py`, `ignite/metrics/confusion_matrix.py`, `ignite/metrics/accuracy.py`
+
+
+# Contribution 2: [ENH] Refactor the ExhaustiveSearch algorithm / Implement Structural Intervention Distance
+
+**Contribution Number:** 1  
+**Student:** Rishabh Padhy
+**Issue:** [pgmpy Issue #1766](https://github.com/pgmpy/pgmpy/issues/1766) and [Stalled PR #1927](https://github.com/pgmpy/pgmpy/pull/1927)  
+**Status:** Phase I Complete
+
+---
+
+## Why I Chose This Issue
+
+I chose to pick up the stalled implementation of the Structural Intervention Distance (SID) metric in `pgmpy` because it perfectly aligns with my background as a senior Computer Science student at Penn State.This issue requires implementing Judea Pearl's do-calculus and complex DAG traversal algorithms (finding valid backdoor adjustment sets) in pure Python, which is a fantastic bridge between discrete math and software engineering.
+
+I am interested in this because:
+1. I have a strong foundation in algorithmic graph theory, so I understand the math required to evaluate causal interventions.
+2. The original PR (#1927) was abandoned, meaning my contribution will be to modernize the deprecated code (e.g., updating `BayesianNetwork` to `DiscreteBayesianNetwork`) and finish the remaining algorithmic logic. 
+3. The maintainers are actively looking for someone to take this across the finish line. 
+4. Contributing a highly respected research metric (SID) to a widely used probabilistic library will be a strong artifact for my graduate school applications.
+
+From reading the issue thread and the stalled PR, I understand the current problem is that the SID metric computation was never fully completed or merged. My contribution will finalize this algorithm, allowing researchers to accurately measure how well a learned causal graph predicts real-world interventions compared to a true graph.
+
