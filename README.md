@@ -309,3 +309,72 @@ I am interested in this because:
 
 From reading the issue thread and the stalled PR, I understand the current problem is that the SID metric computation was never fully completed or merged. My contribution will finalize this algorithm, allowing researchers to accurately measure how well a learned causal graph predicts real-world interventions compared to a true graph.
 
+## Phase II: Reproduce & Plan
+
+
+## Reproduction Process
+
+This is a missing-feature issue combined with a stalled implementation. "Reproduction" in this context means demonstrating that the feature is currently incomplete on the `dev` branch, and reproducing the architectural flaws in the stalled PR (#1927) that prevented it from being merged.
+
+### Environment Setup
+
+* Forked `pgmpy/pgmpy` and cloned it to my local machine.
+* Created a fresh conda/virtual environment with Python 3.10.
+* Installed development dependencies via `pip install -r requirements/requirements-dev.txt` (or standard `pip install -e .[dev]`).
+* **Challenges Faced:** The codebase has evolved significantly since PR #1927 stalled in 2024. Running the stalled code directly against the modern `pgmpy:dev` branch results in immediate `ImportError` and `AttributeError` exceptions because the `BayesianNetwork` class used in the PR has been deprecated and renamed to `DiscreteBayesianNetwork`.
+
+
+
+### Steps to Reproduce
+
+1. From the repo root, attempt to import the SID metric from the current `pgmpy` main branch:
+```python
+from pgmpy.metrics import structural_intervention_distance
+
+```
+
+
+2. **Expected Behavior:** The function imports successfully and computes the SID between two DAGs.
+3. **Actual Behavior:** `ImportError` — the metric does not exist in the codebase.
+4. Next, pull down the code from stalled PR #1927 (`jihyeseo:feature/SID-from-R`).
+
+
+5. Attempt to run the PR's implementation against a modern `pgmpy` test script.
+6. **Expected Behavior:** It calculates SID correctly.
+7. **Actual Behavior (The Flaw):** It crashes due to `BayesianNetwork` deprecations. Furthermore, tracing the logic reveals that the PR attempted to bypass Algorithm 2 (`rondp`) from the paper, relying instead on `pgmpy`'s built-in `is_valid_adjustment_set` function. As noted in the PR discussions, this shortcut fails in roughly 2% of edge cases because it does not perfectly map to the 2p*2p reachability matrix required for non-directed paths.
+
+
+---
+
+## Solution Approach
+
+### Implementation Plan (UMPIRE)
+
+**Understand:** The `pgmpy` library lacks a way to compute the Structural Intervention Distance (SID), a metric that measures how well a learned causal graph predicts real-world interventions compared to a true graph. Unlike Structural Hamming Distance (SHD) which just counts mismatched edges, SID checks if the estimated graph's adjustment sets correctly infer causal effects. I need to finalize stalled PR #1927 by updating its deprecated API calls  and implementing the exact matrix math from the paper to resolve the edge-case bugs.
+
+**Match:**
+The codebase already has structural metrics like SHD (`pgmpy.metrics`). I will match the API signature of these existing metrics so `structural_intervention_distance(true_dag, est_dag)` feels completely native to the library. For the graph traversal math, I will use `numpy` matrix operations, matching the computational approach described in the paper.
+
+**Plan:**
+
+1. **Branch setup:** Branch off the stalled PR #1927  and update all references from `BayesianNetwork` to `DiscreteBayesianNetwork`.
+
+
+2. **Implement `PathMatrix`:** Write a NumPy helper function to compute the path matrix by squaring the adjacency matrix $(Id+\mathcal{G})$ exactly $\lceil log_{2}(p)\rceil$ times, as specified in the paper.
+
+
+3. **Implement `rondp` (Algorithm 2):** Replace the buggy shortcut logic with the strict $2p \times 2p$ reachability matrix algorithm from the paper to correctly identify all reachable nodes on non-directed paths.
+
+
+4. **Implement SID Main Loop (Algorithm 1):** Iterate through all pairs of nodes $(i, j)$ and check the path-blocking conditions to count falsely inferred intervention distributions.
+
+
+
+**Implement:**
+*(To be completed in Phase III — see branch link above)*
+
+**Review:**
+I will ensure the code adheres to `pgmpy`'s formatting guidelines (e.g., `black`, `flake8`). I will ensure type hints are used and docstrings clearly explain the input parameters (`true_dag` and `est_dag` as `DiscreteBayesianNetwork` objects).
+
+**Evaluate:**
+I will write comprehensive unit tests in `pgmpy/tests/`. Crucially, I will implement a test case based on **Example 1** from the paper (where SHD = 1 but SID = 8) to prove that the metric successfully differentiates causal errors from mere graphical errors. I will cross-validate my outputs against the known results from the original R implementation.
