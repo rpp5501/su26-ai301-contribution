@@ -290,10 +290,10 @@ Status: Awaiting review.
 
 # Contribution 2: [ENH] Refactor the ExhaustiveSearch algorithm / Implement Structural Intervention Distance
 
-**Contribution Number:** 1  
+**Contribution Number:** 2
 **Student:** Rishabh Padhy
 **Issue:** [pgmpy Issue #1766](https://github.com/pgmpy/pgmpy/issues/1766) and [Stalled PR #1927](https://github.com/pgmpy/pgmpy/pull/1927)  
-**Status:** Phase I Complete
+**Status:** Phase III Complete
 
 ---
 
@@ -321,7 +321,7 @@ This is a missing-feature issue combined with a stalled implementation. "Reprodu
 * Forked `pgmpy/pgmpy` and cloned it to my local machine.
 * Created a fresh conda/virtual environment with Python 3.10.
 * Installed development dependencies via `pip install -r requirements/requirements-dev.txt` (or standard `pip install -e .[dev]`).
-* **Challenges Faced:** The codebase has evolved significantly since PR #1927 stalled in 2024. Running the stalled code directly against the modern `pgmpy:dev` branch results in immediate `ImportError` and `AttributeError` exceptions because the `BayesianNetwork` class used in the PR has been deprecated and renamed to `DiscreteBayesianNetwork`.
+* **Challenges Faced:** The codebase evolved after PR #1927 was opened. Its patch no longer fits `pgmpy`'s current class-based metrics architecture, and examples in the patch use the deprecated `BayesianNetwork` name instead of current graph and model APIs.
 
 
 
@@ -329,19 +329,19 @@ This is a missing-feature issue combined with a stalled implementation. "Reprodu
 
 1. From the repo root, attempt to import the SID metric from the current `pgmpy` main branch:
 ```python
-from pgmpy.metrics import structural_intervention_distance
+from pgmpy.metrics import SID
 
 ```
 
 
-2. **Expected Behavior:** The function imports successfully and computes the SID between two DAGs.
-3. **Actual Behavior:** `ImportError` — the metric does not exist in the codebase.
+2. **Expected Behavior:** The metric imports successfully and computes SID between two DAGs.
+3. **Actual Behavior:** `ImportError` — SID was not available on the upstream `dev` branch when I began the contribution.
 4. Next, pull down the code from stalled PR #1927 (`jihyeseo:feature/SID-from-R`).
 
 
 5. Attempt to run the PR's implementation against a modern `pgmpy` test script.
 6. **Expected Behavior:** It calculates SID correctly.
-7. **Actual Behavior (The Flaw):** It crashes due to `BayesianNetwork` deprecations. Furthermore, tracing the logic reveals that the PR attempted to bypass Algorithm 2 (`rondp`) from the paper, relying instead on `pgmpy`'s built-in `is_valid_adjustment_set` function. As noted in the PR discussions, this shortcut fails in roughly 2% of edge cases because it does not perfectly map to the 2p*2p reachability matrix required for non-directed paths.
+7. **Actual Behavior:** The patch does not apply cleanly to the current metrics architecture and still uses deprecated model naming. PR discussion also records that a separate experimental implementation based on `is_valid_adjustment_set` disagreed with the reference implementation in roughly 2% of tested cases. I therefore retained the matrix-based Algorithms 1 and 2 rather than using that shortcut.
 
 
 ---
@@ -353,17 +353,17 @@ from pgmpy.metrics import structural_intervention_distance
 **Understand:** The `pgmpy` library lacks a way to compute the Structural Intervention Distance (SID), a metric that measures how well a learned causal graph predicts real-world interventions compared to a true graph. Unlike Structural Hamming Distance (SHD) which just counts mismatched edges, SID checks if the estimated graph's adjustment sets correctly infer causal effects. I need to finalize stalled PR #1927 by updating its deprecated API calls  and implementing the exact matrix math from the paper to resolve the edge-case bugs.
 
 **Match:**
-The codebase already has structural metrics like SHD (`pgmpy.metrics`). I will match the API signature of these existing metrics so `structural_intervention_distance(true_dag, est_dag)` feels completely native to the library. For the graph traversal math, I will use `numpy` matrix operations, matching the computational approach described in the paper.
+The codebase already has structural metrics such as `SHD` in `pgmpy.metrics`. I will follow the current class-based metrics API by implementing `SID` as a supervised metric. For the graph traversal math, I will use NumPy matrix operations, matching the computational approach described in the paper.
 
 **Plan:**
 
-1. **Branch setup:** Branch off the stalled PR #1927  and update all references from `BayesianNetwork` to `DiscreteBayesianNetwork`.
+1. **API setup:** Adapt the stalled work to the current class-based metrics architecture and accept `DAG` objects and compatible subclasses, including `DiscreteBayesianNetwork`.
 
 
 2. **Implement `PathMatrix`:** Write a NumPy helper function to compute the path matrix by squaring the adjacency matrix $(Id+\mathcal{G})$ exactly $\lceil log_{2}(p)\rceil$ times, as specified in the paper.
 
 
-3. **Implement `rondp` (Algorithm 2):** Replace the buggy shortcut logic with the strict $2p \times 2p$ reachability matrix algorithm from the paper to correctly identify all reachable nodes on non-directed paths.
+3. **Implement non-directed reachability (Algorithm 2):** Use the strict $2p \times 2p$ state-doubled reachability construction from the paper to identify reachable nodes on non-directed paths.
 
 
 4. **Implement SID Main Loop (Algorithm 1):** Iterate through all pairs of nodes $(i, j)$ and check the path-blocking conditions to count falsely inferred intervention distributions.
@@ -371,10 +371,107 @@ The codebase already has structural metrics like SHD (`pgmpy.metrics`). I will m
 
 
 **Implement:**
-*(To be completed in Phase III — see branch link above)*
+Completed in Phase III; see the implementation notes below.
 
 **Review:**
-I will ensure the code adheres to `pgmpy`'s formatting guidelines (e.g., `black`, `flake8`). I will ensure type hints are used and docstrings clearly explain the input parameters (`true_dag` and `est_dag` as `DiscreteBayesianNetwork` objects).
+I will ensure the code passes `pgmpy`'s Ruff and pre-commit checks. Public APIs will include type hints and docstrings describing the accepted DAG inputs.
 
 **Evaluate:**
 I will write comprehensive unit tests in `pgmpy/tests/`. Crucially, I will implement a test case based on **Example 1** from the paper (where SHD = 1 but SID = 8) to prove that the metric successfully differentiates causal errors from mere graphical errors. I will cross-validate my outputs against the known results from the original R implementation.
+
+---
+
+## Implementation Notes
+
+### Phase III Build Summary
+
+During Phase III, I implemented Structural Intervention Distance (SID) as a new class-based metric in `pgmpy/metrics/sid.py`. The implementation translates Algorithms 1 and 2 from Appendix F of [Peters & Bühlmann (2014)](https://arxiv.org/pdf/1306.1043) into NumPy matrix operations.
+
+The public API follows `pgmpy`'s current metrics architecture:
+
+```python
+from pgmpy.metrics import SID
+
+score = SID()(
+    true_causal_graph=true_dag,
+    est_causal_graph=estimated_dag,
+)
+```
+
+The metric accepts `DAG` objects and compatible subclasses, including `DiscreteBayesianNetwork`.
+
+### Core Implementation Details
+
+1. **Current Metrics API:** Added `SID` as a subclass of `BaseSupervisedMetric`, matching `pgmpy`'s existing class-based metrics interface.
+2. **Directed Path Matrix:** Implemented `_compute_path_matrix`, which computes the reflexive transitive closure of a Boolean adjacency matrix through repeated Boolean matrix multiplication.
+3. **Non-Directed Path Reachability:** Implemented `_reachable_on_non_directed_path`, based on Algorithm 2 from the paper. It uses a doubled $2p \times 2p$ state space to retain edge-entry orientation while evaluating non-directed paths.
+4. **SID Computation:** Implemented the Algorithm 1 conditions in `_sid_matrix`. The public `SID` metric aligns node order, constructs the adjacency matrices once, and returns the total number of incorrectly inferred intervention distributions.
+5. **Documentation and Export:** Exported `SID` from `pgmpy/metrics/__init__.py` and added it to `docs/api/metrics.rst`.
+
+### Challenges Overcome During Build
+
+- **Collider state tracking:** An ordinary graph traversal can lose the orientation state needed when evaluating non-directed paths. The doubled state space preserves whether a traversal enters or leaves each node along an arrow.
+- **Reference translation:** I compared the Appendix F pseudocode, the stalled pull request, and reference results to ensure the NumPy implementation followed the intended child and parent transitions.
+- **Node alignment:** The public metric maps both input graphs to the same node order before constructing their adjacency matrices, so arbitrary labels and insertion orders produce consistent results.
+
+---
+
+## Code Changes
+
+- `pgmpy/metrics/sid.py` — Added `SID`, `_sid_matrix`, `_compute_path_matrix`, and `_reachable_on_non_directed_path`.
+- `pgmpy/metrics/__init__.py` — Exported `SID`.
+- `pgmpy/tests/test_metrics/test_sid.py` — Added paper examples, reference matrices, validation tests, and node-order tests.
+- `docs/api/metrics.rst` — Added the SID API reference.
+
+---
+
+## Testing Strategy
+
+The SID test module includes:
+
+- [x] Paper Example 1, verifying $SID(G, H_1) = 0$ and $SID(G, H_2) = 8$.
+- [x] Six elementwise SID matrices cross-checked against reference results.
+- [x] Asymmetry checks, since $SID(G, H)$ generally differs from $SID(H, G)$.
+- [x] Different node insertion orders.
+- [x] `DiscreteBayesianNetwork` inputs.
+- [x] Invalid node-set and cyclic-graph validation.
+
+### Benchmark Verification: Paper Example 1
+
+The true graph $G$ contains $X_1 \rightarrow X_2$ and all six edges from $\{X_1, X_2\}$ to $\{Y_1, Y_2, Y_3\}$.
+
+- $H_1$ adds $Y_1 \rightarrow Y_2$, producing $SHD(G, H_1) = 1$ and $SID(G, H_1) = 0$.
+- $H_2$ reverses $X_1 \rightarrow X_2$ while retaining the six common edges, producing $SHD(G, H_2) = 1$ and $SID(G, H_2) = 8$.
+
+This demonstrates that two estimated graphs with the same SHD can have substantially different consequences for causal intervention predictions.
+
+### Verification Results
+
+- Complete metrics test suite: **50 passed**.
+- SID docstring test: **1 passed**.
+- Ruff and pre-commit checks: **passed**.
+- Sparse 50-node benchmark on my development machine: approximately **0.23 seconds**.
+
+The performance measurement is environment-dependent and is included as an informal scalability check rather than a general speed guarantee.
+
+---
+
+## Learnings & Reflections
+
+### Technical Skills Gained
+
+- Translating causal-inference algorithms involving d-separation and adjustment criteria into vectorized graph operations.
+- Computing transitive closure through Boolean matrix powers.
+- Using state-space doubling to preserve path-entry orientation.
+- Integrating a new metric into an established class-based API and documentation system.
+
+### What I Would Do Differently Next Time
+
+I would compare the paper appendix, the reference implementation, and the target repository's current architecture before adapting a stalled patch. That comparison exposed both algorithmic edge cases and API changes early enough to guide the implementation.
+
+### Resources Used
+
+- [Structural Intervention Distance paper — Peters & Bühlmann (2014)](https://arxiv.org/pdf/1306.1043)
+- [pgmpy GitHub repository](https://github.com/pgmpy/pgmpy)
+- [pgmpy Issue #1766](https://github.com/pgmpy/pgmpy/issues/1766)
+- [Stalled PR #1927](https://github.com/pgmpy/pgmpy/pull/1927)
